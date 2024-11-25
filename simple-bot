@@ -1,0 +1,218 @@
+import requests
+import random
+import re
+import sys
+import time
+import threading
+from datetime import timedelta, datetime
+from telegram import Update, ParseMode
+from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
+
+def restart_check():
+    while True:
+        now = datetime.now()
+        if now.hour == 2:  # Restart at 2 AM
+            sys.exit()
+        if now.hour == 14:  # Restart at 2 AM
+            sys.exit()
+        time.sleep(600)
+
+# TEXT
+replies = [
+    "*",
+    "*",
+    "*",
+    "*",
+    "*",
+    "*",
+];
+starting = [
+    "Мнение *",
+    "Мнение *",
+    "Мнение *",
+    "Мнение *",
+    "Мнение *",
+    "То, за чем вы сюда пришли",
+    "Мысли лучшего",
+    "Единственно верное мнение",
+    "Твое новое мнение",
+    "Вещает *",
+    "Записывай",
+    "А теперь, слушай внимательно",
+    "То, за что стоило бы платить"
+]
+answer = [
+    "ответил",
+    "ответил",
+    "ответил",
+    "ответил",
+    "ответил",
+    "ответил",
+    "проявил благосклонность и сказал",
+    "без капли осуждения ответил",
+    "лаконично ответил",
+    "дал понять, кто есть кто, сказав",
+    "однозначно ответил",
+    "развернуто ответил",
+    "дал язвительный ответ",
+    "дал ошеломляющий ответ",
+    "честно ответил",
+]
+# TEXT
+
+TOKEN = "*"
+CHAT_ID_TO_CHECK = "*"# -int PUBLIC ID
+USER_ID = "*"# -int ID
+FORWARD_CHAT_ID = "*"#-int TARGET PUBLIC ID
+IMGUR_CLIENT_ID = "*"#string ID
+ROOT_CHAT_ID = "*"#-int ID
+TIME_DELTA=timedelta(hours=3)
+
+def escape_markdown(text):
+    text = text.replace("_", "\\_").replace("*", "\\*").replace("[", "\\[").replace("`", "\\`")
+    return text
+
+def upload_to_imgur(file):
+    headers = {'Authorization': f'Client-ID {IMGUR_CLIENT_ID}'}
+    files = {'image': file}
+    response = requests.post("https://api.imgur.com/3/upload", headers=headers, files=files)
+    json_data = response.json()
+    if response.status_code == 200 and json_data['success']:
+        return json_data['data']['link']
+    else:
+        return None
+
+reply_chain_dict = {}
+
+def get_initial_message(message_id):
+    if message_id in reply_chain_dict:
+        initial_message = reply_chain_dict[message_id]
+        if initial_message.from_user.id != ROOT_CHAT_ID:
+            return get_initial_message(initial_message.message_id)
+        else:
+            return initial_message
+    else:
+        return None
+
+def handle_message(context, text, photo = None, message_id = None, with_photo = False):
+    print(text)
+    if with_photo:
+        if message_id:
+            return context.bot.edit_message_caption(chat_id=FORWARD_CHAT_ID, message_id=message_id, caption=text, parse_mode=ParseMode.MARKDOWN)
+        else:
+            return context.bot.send_photo(chat_id=FORWARD_CHAT_ID, photo=photo, caption=text, parse_mode=ParseMode.MARKDOWN)
+    else:
+        if message_id:
+            return context.bot.edit_message_text(chat_id=FORWARD_CHAT_ID, message_id=message_id, text=text, parse_mode=ParseMode.MARKDOWN)
+        else:
+            return context.bot.send_message(chat_id=FORWARD_CHAT_ID, text=text, parse_mode=ParseMode.MARKDOWN)
+
+def prepare_photo_text(context, message, initial_message = False, is_reply = False):
+    text = '';
+    if initial_message:
+        text += f"***{random.choice(starting)}***:"
+    if message.photo:
+        if message.caption:
+            if not is_reply or not initial_message:
+                text += f"\n\[{(message.date + TIME_DELTA).strftime('%H:%M:%S')}] - {message.caption}"
+        photo = message.photo[-1]
+        if photo.file_id not in sent_photo_ids:
+            photo_file = context.bot.get_file(photo.file_id)
+            photo_url = upload_to_imgur(photo_file.download_as_bytearray())
+            if photo_url:
+                text += f"\n\[{(message.date + TIME_DELTA).strftime('%H:%M:%S')}] - 📷({photo_url})"
+                sent_photo_ids.add(photo.file_id)
+    else:
+        if not is_reply or not initial_message:
+            text += f"\n\[{(message.date + TIME_DELTA).strftime('%H:%M:%S')}] - {message.text}"
+    return text
+
+def handle_reply(context, update, is_reply = False):
+    text = '';
+    if is_reply:
+        text += f"\n*{update.message.reply_to_message.from_user.first_name}"
+        if update.message.reply_to_message.from_user.last_name:
+            text += f" {update.message.reply_to_message.from_user.last_name}"
+        text += f"* {random.choice(replies)}:{prepare_photo_text(context=context, message=update.message.reply_to_message, is_reply=True)}\n*Стифлер* {random.choice(answer)}:{prepare_photo_text(context=context, message=update.message, is_reply=True)}"
+    return text
+
+
+# Store the ID of the sent message that corresponds to each original message
+sent_messages = {}
+answered_messages = {}
+# Store the photo IDs that have already been sent
+sent_photo_ids = set()
+def check_message(update: Update, context: CallbackContext):
+    # Check if the message is from the specified user and is a reply that contains a photo
+    if update.message and update.message.reply_to_message:
+        reply_chain_dict[update.message.message_id] = update.message.reply_to_message
+    if (
+        update.effective_chat.id == CHAT_ID_TO_CHECK
+        and update.effective_user.id == USER_ID
+        and update.message.reply_to_message
+        and not update.message.sticker
+    ):
+        original_message_id = update.message.reply_to_message.message_id
+        initial_message = update.message.reply_to_message
+        is_reply = False
+        if update.message.reply_to_message.from_user.id != ROOT_CHAT_ID:
+            is_reply = True
+            initial_message = get_initial_message(update.message.reply_to_message.message_id)
+            if initial_message:
+                original_message_id = initial_message.message_id
+        if original_message_id in sent_messages:
+            # Если это НЕ ПЕРВАЯ РЕАКЦИЯ на пост
+            sent_message = sent_messages[original_message_id]
+            if update.message.reply_to_message.message_id not in answered_messages:
+                sent_message['caption'] += handle_reply(context=context, update=update, is_reply=is_reply)
+            if not is_reply or update.message.reply_to_message.message_id in answered_messages:
+                sent_message['caption'] += prepare_photo_text(context=context, message=update.message, is_reply=is_reply)
+            handle_message(context=context, message_id=sent_message['message_id'], text=sent_message['caption'], with_photo=sent_message['with_photo'])
+            answered_messages[update.message.reply_to_message.message_id] = update.message.reply_to_message.message_id
+        else:
+            # Если это ПЕРВАЯ РЕАКЦИЯ на пост
+            if initial_message:
+                caption = f"{initial_message.text or initial_message.caption or '<Пост без текста>'}"
+                caption = re.sub(r'^\s*(RU|UA):.*?\n', '', caption, flags=re.MULTILINE)
+                caption = caption.replace("Делай прогнозы у наших друзей и выигрывай призы: Бот-предиктор Кибера", "")
+                caption = caption.replace("Участвуй в фэнтези от нашего паблика и выигрывай деньги:\nhttps://sprts.cc/D12UML", "")
+                caption = caption.replace('\n\n', '\n')
+                caption = escape_markdown(caption)
+                caption += "\n\n_Оригинальный пост может содержать более 1 фото_"
+                caption += f"\nВесь новостной контент принадлежит https://t.me/dotatoday\nОригинальный пост: https://t.me/c/{str(initial_message.chat.id)[4:]}/{initial_message.message_id}\n\n"
+                caption = caption.replace('\n\n\n', '\n\n')
+                if is_reply:
+                    caption += f"***{random.choice(starting)}***:"
+                else:
+                    caption += prepare_photo_text(context=context, message=update.message, initial_message=True)
+                caption += handle_reply(context=context, update=update, is_reply=is_reply)
+                if initial_message.photo:
+                    message = handle_message(context=context, photo=initial_message.photo[-1].file_id, text=caption, with_photo=True)
+                    sent_messages[original_message_id] = {'with_photo': True, 'message_id': message.message_id, 'caption': caption}
+                else:
+                    # Если это первая реакция БЕЗ фото
+                    message = handle_message(context=context, text=caption)
+                    sent_messages[original_message_id] = {'with_photo': False, 'message_id': message.message_id, 'caption': caption}
+                answered_messages[update.message.reply_to_message.message_id] = update.message.reply_to_message.message_id
+
+def main():
+    updater = Updater(token=TOKEN, use_context=True)
+    dp = updater.dispatcher
+
+    # Create a message handler that checks all messages
+    message_handler = MessageHandler(Filters.all, check_message)
+
+    # Register the handler with the dispatcher
+    dp.add_handler(message_handler)
+
+    # Start the Bot
+    updater.start_polling()
+    updater.idle()
+    print("Bot running...")
+
+if __name__ == '__main__':
+    restart_thread = threading.Thread(target=restart_check)
+    restart_thread.daemon = True
+    restart_thread.start()
+
+    main()
